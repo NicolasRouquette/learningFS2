@@ -1,7 +1,6 @@
 package cafe
 
 import java.lang.{Integer, System, Thread}
-import java.util.concurrent.TimeUnit
 
 import fs2._
 
@@ -9,13 +8,13 @@ import scalaz._
 import scala.collection.immutable.Seq
 import scala.concurrent.duration._
 import scala.{App, Int, Long, None, Option, StringContext, Unit}
-import scala.Predef.{intWrapper,String}
+import scala.Predef.String
 
 object Main6f extends App {
   implicit val S: Strategy = Strategy.fromFixedDaemonPool(8, threadName = "worker")
 
-  val norders: Long = Integer.parseInt(args(0)).toLong
-  val qsize: Int = Integer.parseInt(args(1))
+  val norders: Long = if (args.length == 2) Integer.parseInt(args(0)).toLong else 20L
+  val qsize: Int = if (args.length == 2) Integer.parseInt(args(1)) else 5
 
   val c = Cafe()
   System.out.println(s"Cafe ${c.name} opened for business")
@@ -88,13 +87,13 @@ object Main6f extends App {
       val waiter1
       : Stream[Task, Unit]
       = q.dequeue.unNoneTerminate.flatMap { d =>
-        marker("W1 Serving" + d) ++ time.sleep_(30.millis) ++ marker("W1 Served" + d)
+        marker("W1 Serving" + d) ++ time.sleep_[Task](30.millis) ++ marker("W1 Served" + d)
       }
 
       val waiter2
       : Stream[Task, Unit]
       = q.dequeue.unNoneTerminate.flatMap { d =>
-        marker("W2 Serving" + d) ++ time.sleep_(300.millis) ++ marker("W2 Served" + d)
+        marker("W2 Serving" + d) ++ time.sleep_[Task](300.millis) ++ marker("W2 Served" + d)
       }
 
       // Run and collect the results for print out.

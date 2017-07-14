@@ -1,9 +1,12 @@
 package cafe
 
+import java.lang.{Integer, System, Thread}
+
 import fs2._
 
-import scala.collection.immutable.Seq
 import scalaz._
+import scala.collection.immutable.Seq
+import scala.{App, Long, StringContext, Unit}
 
 object Main6a extends App {
 

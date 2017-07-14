@@ -1,9 +1,13 @@
 package cafe
 
+import java.lang.{Integer, System}
+
 import fs2._
 
-import scala.collection.immutable.Seq
 import scalaz._
+import scala.collection.immutable.Seq
+import scala.{App, Long, StringContext}
+import scala.Predef.String
 
 object Main3 extends App {
 
