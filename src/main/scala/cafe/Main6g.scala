@@ -13,6 +13,8 @@ import scala.Predef.String
 object Main6g extends App {
   implicit val S: Strategy = Strategy.fromFixedDaemonPool(8, threadName = "worker")
 
+  implicit val sched: Scheduler = Scheduler.fromFixedDaemonPool(corePoolSize = 1)
+
   val norders: Long = if (args.length == 2) Integer.parseInt(args(0)).toLong else 10L
   val qsize: Int = if (args.length == 2) Integer.parseInt(args(1)) else 3
 
@@ -89,8 +91,6 @@ object Main6g extends App {
           Stream.eval(allDrinksServed).flatMap {
             finished: async.mutable.Signal[Task, Boolean] =>
 
-              implicit val sched: Scheduler = Scheduler.fromFixedDaemonPool(corePoolSize = 1)
-
               val drinks
               : Stream[Task, Drink]
               = orders
@@ -103,12 +103,20 @@ object Main6g extends App {
               : Stream[Task, Unit]
               = Stream.eval(Task.delay(System.out.println(Thread.currentThread.getName + " " + str)))
 
+              def mark(str: String)
+              : Task[Unit]
+              = Task.delay(System.out.println(Thread.currentThread.getName + " " + str))
+
               def serveOrRedo(name: String, delay: FiniteDuration)(d: Drink)
               : Stream[Task, Unit]
-              = if (d.redo) {
-                System.out.println(s"${Thread.currentThread.getName} $name Redo: $d")
-                Stream.eval(q.enqueue1(d.copy(redo = false)))
-              } else {
+              = if (d.redo)
+                Stream.eval {
+                  for {
+                    _ <- Task.delay(System.out.println(s"${Thread.currentThread.getName} $name Redo: $d"))
+                    _ <- q.enqueue1(d.copy(redo = false))
+                  } yield ()
+                }
+              else {
                 marker(s"$name Serving $d") ++
                   time.sleep_[Task](delay) ++
                   marker(s"$name Served $d") ++
