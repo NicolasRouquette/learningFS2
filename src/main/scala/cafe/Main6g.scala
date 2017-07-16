@@ -103,10 +103,6 @@ object Main6g extends App {
               : Stream[Task, Unit]
               = Stream.eval(Task.delay(System.out.println(Thread.currentThread.getName + " " + str)))
 
-              def mark(str: String)
-              : Task[Unit]
-              = Task.delay(System.out.println(Thread.currentThread.getName + " " + str))
-
               def serveOrRedo(name: String, delay: FiniteDuration)(d: Drink)
               : Stream[Task, Unit]
               = if (d.redo)
@@ -116,36 +112,17 @@ object Main6g extends App {
                     _ <- q.enqueue1(d.copy(redo = false))
                   } yield ()
                 }
-              else
-
-              // This form seems to never execute finished.set(done)
-
-//                Stream.eval {
-//                  for {
-//                    _ <- mark(s"$name Serving $d")
-//                    _ <- Task delay time.sleep_[Task](delay)
-//                    _ <- mark(s"$name Served $d")
-//                    _ <- as.decrement
-//                    n <- as.available
-//                    done = n == 0
-//                    _ <- Task delay System.out.println(s"${Thread.currentThread.getName} $name Remaining = ${if (done) "Finished!" else n}")
-//                    _ <- finished.set(done)
-//                  } yield ()
-//                }
-
-              {
+              else {
                 marker(s"$name Serving $d") ++
                   time.sleep_[Task](delay) ++
                   marker(s"$name Served $d") ++
-                  Stream.eval(as.decrement) ++
                   Stream.eval {
-                    as.available.flatMap { n =>
-                      finished.set {
-                        val done = n==0
-                        System.out.println(s"${Thread.currentThread.getName} $name Remaining = ${if (done) "Finished!" else n}")
-                        done
-                      }
-                    }
+                    for {
+                      _ <- as.decrement
+                      n <- as.available
+                      _ <- finished.set(n == 0)
+                      _ <- Task delay System.out.println(s"${Thread.currentThread.getName} $name Remaining = ${if (n == 0) "Finished!" else n}")
+                    } yield ()
                   }
               }
 
@@ -179,9 +156,6 @@ object Main6g extends App {
                       } yield ()
                     }
                 } merge waiter1 merge waiter2
-
-              // This form does not work; it lacks the '.repeat'
-              //orderingResult.interruptWhen(finished)
 
               orderingResult.interruptWhen(finished.discrete.repeat)
           }
