@@ -157,7 +157,7 @@ object Main6g extends App {
                     }
                 } merge waiter1 merge waiter2
 
-              orderingResult.interruptWhen(finished.discrete.repeat)
+              orderingResult.interruptWhen(finished)
           }
       }
   }
