@@ -67,21 +67,26 @@ object Main6g extends App {
   : Task[async.mutable.Queue[Task, Drink]]
   = async.boundedQueue[Task, Drink](maxSize = qsize)
 
-  val available
+  // number of remaining drinks to be served
+  // Incremented when a drink is prepared
+  // Decremented when a drink is served or when there are no more drinks to serve
+  // If a customer asks to redo a drink, the semaphore is unchanged but the drink is enqueued again.
+  val remainingToServe
   : Task[async.mutable.Semaphore[Task]]
   = async.semaphore[Task](1L)
 
-  val finished
+  // All drinks are served when the semaphore `remainingToServe` reaches zero
+  val allDrinksServed
   : Task[async.mutable.Signal[Task, Boolean]]
   = async.mutable.Signal(false)
 
   val jdq = Stream.eval(joinDrinkQueue).flatMap {
     q: async.mutable.Queue[Task, Drink] =>
 
-      Stream.eval(available).flatMap {
+      Stream.eval(remainingToServe).flatMap {
         as: async.mutable.Semaphore[Task] =>
 
-          Stream.eval(finished).flatMap {
+          Stream.eval(allDrinksServed).flatMap {
             finished: async.mutable.Signal[Task, Boolean] =>
 
               implicit val sched: Scheduler = Scheduler.fromFixedDaemonPool(corePoolSize = 1)
