@@ -116,7 +116,24 @@ object Main6g extends App {
                     _ <- q.enqueue1(d.copy(redo = false))
                   } yield ()
                 }
-              else {
+              else
+
+              // This form seems to never execute finished.set(done)
+
+//                Stream.eval {
+//                  for {
+//                    _ <- mark(s"$name Serving $d")
+//                    _ <- Task delay time.sleep_[Task](delay)
+//                    _ <- mark(s"$name Served $d")
+//                    _ <- as.decrement
+//                    n <- as.available
+//                    done = n == 0
+//                    _ <- Task delay System.out.println(s"${Thread.currentThread.getName} $name Remaining = ${if (done) "Finished!" else n}")
+//                    _ <- finished.set(done)
+//                  } yield ()
+//                }
+
+              {
                 marker(s"$name Serving $d") ++
                   time.sleep_[Task](delay) ++
                   marker(s"$name Served $d") ++
@@ -147,13 +164,24 @@ object Main6g extends App {
                 .noneTerminate
                 .flatMap {
                   case Some(d) =>
-                    System.out.println(s"${Thread.currentThread.getName} Queueing: $d")
-                    Stream.eval(as.increment) ++
-                      Stream.eval(q.enqueue1(d))
+                    Stream.eval {
+                      for {
+                        _ <- Task delay System.out.println(s"${Thread.currentThread.getName} Queueing: $d")
+                        _ <- as.increment
+                        _ <- q.enqueue1(d)
+                      } yield ()
+                    }
                   case None =>
-                    System.out.println(s"${Thread.currentThread.getName} No more drinks!")
-                    Stream.eval(as.decrement)
+                    Stream.eval {
+                      for {
+                        _ <- Task delay System.out.println(s"${Thread.currentThread.getName} No more drinks!")
+                        _ <- as.decrement
+                      } yield ()
+                    }
                 } merge waiter1 merge waiter2
+
+              // This form does not work; it lacks the '.repeat'
+              //orderingResult.interruptWhen(finished)
 
               orderingResult.interruptWhen(finished.discrete.repeat)
           }
