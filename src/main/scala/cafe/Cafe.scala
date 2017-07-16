@@ -23,13 +23,15 @@ case class Drink(
                   onumber: Int,
                   drinkType: DrinkType,
                   shots: Int,
-                  iced: Boolean)
+                  iced: Boolean,
+                  redo: Boolean)
 
 case class Item(
                  onumber: Int,
                  drinkType: DrinkType,
                  shots: Int = 1,
-                 iced: Boolean = false)
+                 iced: Boolean = false,
+                 redo: Boolean = false)
 
 case class Order(
                   number: Int,
@@ -47,7 +49,7 @@ case class Cafe(
     val nbItems = 1 + random.nextInt(5)
     val items = for {
       _ <- 0 to nbItems
-      i = Item(orderNum, randomDrink(), random.nextInt(3), random.nextBoolean())
+      i = Item(orderNum, randomDrink(), random.nextInt(3), random.nextBoolean(), random.nextBoolean())
     } yield i
 
     Order(orderNum, items)
@@ -65,11 +67,11 @@ case class Barista(name: String) {
   def prepareHotDrink(item: Item): Drink = {
     Thread.sleep(hotDrinkDelay)
     System.out.println(s"""$name: ${Thread.currentThread.getName} prepared hot drink #${hotDrinkCounter.getAndIncrement} for order #${item.onumber}: $item""")
-    Drink(item.onumber, item.drinkType, item.shots, item.iced)
+    Drink(item.onumber, item.drinkType, item.shots, item.iced, item.redo)
   }
   def prepareColdDrink(item: Item): Drink = {
     Thread.sleep(coldDrinkDelay)
     System.out.println(s"""$name: ${Thread.currentThread.getName} prepared cold drink #${hotDrinkCounter.getAndIncrement} for order #${item.onumber}: $item""")
-    Drink(item.onumber, item.drinkType, item.shots, item.iced)
+    Drink(item.onumber, item.drinkType, item.shots, item.iced, item.redo)
   }
 }

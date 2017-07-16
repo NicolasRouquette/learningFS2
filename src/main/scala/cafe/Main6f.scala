@@ -6,7 +6,7 @@ import fs2._
 
 import scalaz._
 import scala.collection.immutable.Seq
-import scala.concurrent.duration._
+import scala.concurrent.duration.DurationInt
 import scala.{App, Int, Long, None, Option, StringContext, Unit}
 import scala.Predef.String
 
