@@ -1,16 +1,18 @@
 package jira
 
 import java.lang.System
+import java.nio.charset.StandardCharsets
 
+import util.Env
 import io.circe.Json
 import org.http4s._
-import org.http4s.client.Client
+import org.http4s.client.{Client}
 import org.http4s.client.blaze.{BlazeClientConfig, PooledHttp1Client}
-import org.http4s.headers.{Accept, Authorization, `Content-Type`,  `Set-Cookie`}
-import _root_.util.Env
+import org.http4s.headers.{Accept, Authorization, `Content-Type`, `Set-Cookie`}
+import fs2.{Chunk, Stream}
 
 import scala.concurrent.duration.Duration
-import scala.{App, None, Option, Some, StringContext}
+import scala.{App, StringContext}
 import scala.Predef.identity
 
 object MyIssues extends App {
@@ -23,7 +25,11 @@ object MyIssues extends App {
   val pass = Env.lookupEnvOrPromptPassword("password")
   val issueID = Env.lookupEnvOrPrompt("JIRA Issue #")
 
-  val h = Headers(`Content-Type`(MediaType.`text/plain`)) ++ Headers(Authorization(BasicCredentials(user, pass)))
+  val acceptApplicationJson = Headers(Accept(MediaType.`application/json`))
+
+  val contentTypeJson = Headers(`Content-Type`(MediaType.`application/json`, Charset.`UTF-8`))
+
+  val h = Headers(Authorization(BasicCredentials(user, pass)))
 
   val httpClient: Client = PooledHttp1Client(config = BlazeClientConfig.insecure.copy(idleTimeout = Duration.Inf))
 
@@ -32,32 +38,30 @@ object MyIssues extends App {
 
   import org.http4s.circe.jsonDecoder
 
-  val acceptApplicationJson = Headers(Accept(MediaType.`application/json`))
+  import io.circe.syntax._
+  import io.circe.generic.auto._
 
-  val hfilter = (h: Headers) => h.filter { h =>
-    h.name == `Set-Cookie`.name
-  }
+  val credentials: Json = jira.Credentials(username = user, password = pass).asJson
 
   val issueInfo
-  : Option[Json]
-  = httpClient.fetch(Request(Method.POST, jiraAuth / "session", headers = h)) { resp: Response =>
-    val sessionHeaders = resp.headers ++  acceptApplicationJson
-    System.out.println(s"Status:\n${resp.status}")
-    System.out.println(s"Headers:\n${sessionHeaders.mkString("\n")}")
+  : Json
+  = httpClient.fetch(
+    Request(
+      Method.POST,
+      jiraAuth / "session",
+      headers = h ++ contentTypeJson,
+      body = Stream.chunk(Chunk.bytes(credentials.toString.getBytes(StandardCharsets.UTF_8))))) { resp =>
+
+    val cookies = resp.headers.filter(_.name == `Set-Cookie`.name).map { h =>
+      headers.Cookie(headers.`Set-Cookie`.parse(h.value).fold(throw _, identity).cookie)
+    }
+
     httpClient.expect[Json](
       Request(
         Method.GET,
         jiraApi / "issue" / issueID +? ("fields", "*all"),
-        headers = sessionHeaders))
-      .attemptFold(
-        (t: java.lang.Throwable) => {
-          System.err.println(s"Error: $t")
-          t.printStackTrace(System.err)
-          None
-        },
-        (json: Json) =>
-          Some(json)
-      )
+        headers = cookies))
+
   }.unsafeRun()
 
   System.out.println(s"Issue\n$issueInfo")
