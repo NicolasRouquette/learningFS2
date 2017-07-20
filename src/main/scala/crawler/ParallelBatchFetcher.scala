@@ -1,16 +1,17 @@
 package crawler
 
-import java.lang.{System,Thread}
+import java.lang.{System, Thread}
 import java.nio.charset.StandardCharsets
 
-import fs2.{Chunk, Pipe, Scheduler, Stream, Task, async}
+import fs2.{Chunk, Scheduler, Strategy, Stream, Task, async}
 import io.circe.Json
 import org.http4s.{Headers, Method, Request, Uri}
 import org.http4s.client.Client
 
-import scala.collection.immutable.Seq
-import scala.{Boolean, Either, Int, Right, StringContext, Unit}
-import scala.Predef.intWrapper
+import scala.collection.immutable.{Seq,Vector}
+import scala.concurrent.duration.FiniteDuration
+import scala.{Boolean, Int, StringContext, Unit}
+import scala.Predef.{String, intWrapper}
 
 object ParallelBatchFetcher {
 
@@ -21,6 +22,7 @@ object ParallelBatchFetcher {
     * @param fetchRootIDsURI The URI to GET the starting set of root IDs
     * @param fetchIDBatchURI The URI to POST a query to fetch elements for a given batch of IDs
     * @param batchSize The maximum size of a batch of IDs or 0 for fetching all at once
+    * @param batchDelay A small delay to wait before repeatedly checking whether the queue is empty
     * @param h Headers (content, authorization, ...)
     * @param httpClient http4s client for executing GET and POST requests
     * @param json2rootIDs Scan the Json result of the fetchRootIDsURI query for root IDs
@@ -35,137 +37,138 @@ object ParallelBatchFetcher {
    fetchIDBatchURI: Uri,
    nbWorkers: Int,
    batchSize: Int,
-   maxSize: Int = 100000,
+   batchDelay: FiniteDuration,
+   maxSize: Int = 10000000,
    h: Headers,
    httpClient: Client,
    json2rootIDs: (Json) => Seq[ID],
    json2elementMapDependencies: Json => (Seq[Element], Seq[ID]))
-  (implicit S: fs2.Strategy)
-  : Either[java.lang.Throwable, Seq[Element]] = {
+  (implicit S: Strategy, sched: Scheduler)
+  : Task[Vector[Element]] = {
 
     import org.http4s.circe.jsonDecoder
 
-    val resultQueue
+    // Queue of fetched Elements.
+    val fechedElements
     : Task[async.mutable.Queue[Task, Element]]
-    = async.unboundedQueue[Task, Element]
+    = async.boundedQueue[Task, Element](maxSize = maxSize)
 
+    // Queue of IDs to be fetched
     val idQueue
     : Task[async.mutable.Queue[Task, ID]]
     = async.boundedQueue[Task, ID](maxSize = maxSize)
 
-    val remainingToFetch
+    // Count of IDs that have been requested and that should eventually result in corresponding Elements
+    val remainingToReceive
     : Task[async.mutable.Semaphore[Task]]
-    = async.semaphore[Task](1L)
+    = async.semaphore[Task](0L)
 
+    // true when there there are no IDs to be fetched and all requested IDs have been received.
     val allIDsFetched
     : Task[async.mutable.Signal[Task, Boolean]]
     = async.mutable.Signal(false)
 
-    val rq
-    : Stream[Task, Element]
-    = Stream.eval(resultQueue).flatMap {
-      elements: async.mutable.Queue[Task, Element] =>
-        val fetchAll
-        : Stream[Task, Unit]
-        = Stream.eval(idQueue).flatMap {
-          q: async.mutable.Queue[Task, ID] =>
+    // Show progress and check if the work is done.
+    def updateStats
+    (es: async.mutable.Queue[Task, Element],
+     as: async.mutable.Semaphore[Task],
+     q: async.mutable.Queue[Task, ID],
+     finished: async.mutable.Signal[Task, Boolean],
+     prefix: String, suffix: String)
+    : Task[Unit]
+    = for {
+      n <- as.available
+      qs <- q.size.get
+      nes <- es.size.get
+      done = n == 0 && qs == 0
+      _ =
+      System.out.println(
+        f"${Thread.currentThread.getName} $prefix (elements: $nes%7d, queue: $qs%7d, remaining: $n%7d)${if (done) "=> Finished!" else " "}$suffix")
+      _ <- finished.set(done)
+    } yield ()
 
-            Stream.eval(remainingToFetch).flatMap {
-              as: async.mutable.Semaphore[Task] =>
+    // Request elements for a batch of IDs and scan for new IDs to fetch
+    def fetchElements
+    (es: async.mutable.Queue[Task, Element],
+     as: async.mutable.Semaphore[Task],
+     q: async.mutable.Queue[Task, ID],
+     finished: async.mutable.Signal[Task, Boolean],
+     ids: Seq[ID])
+    : Task[Unit]
+    = if (ids.isEmpty)
+      Task(())
+    else
+      for {
+        _ <- as.incrementBy(ids.size.toLong)
+        _ <- updateStats(es, as, q, finished, "Batch:  ", s" => Fetch ${ids.size} IDs...")
 
-                Stream.eval(allIDsFetched).flatMap {
-                  finished: async.mutable.Signal[Task, Boolean] =>
+        json <- httpClient
+          .expect[Json](
+          Request(Method.POST,
+            fetchIDBatchURI,
+            headers = h,
+            body =
+              Stream.chunk(Chunk.bytes(ids.toList.mkString(",").getBytes(StandardCharsets.UTF_8)))))
 
-                    implicit val sched: Scheduler = Scheduler.fromFixedDaemonPool(corePoolSize = 1)
+        (els: Seq[Element], more: Seq[ID]) = json2elementMapDependencies(json)
+        _ <- updateStats(es, as, q, finished, "Result: ", s" => Got ${els.size} elements and ${more.size} new IDs")
+        _ <- Stream.emits(more).to(q.enqueue).drain.run
+        _ <- Stream.emits(els).to(es.enqueue).drain.run
+        _ <- as.decrementBy(ids.size.toLong)
+        _ <- updateStats(es, as, q, finished, "Next:   ", "")
+      } yield ()
 
-                    val enqueueIDs
-                    : Pipe[Task, ID, Unit]
-                    = _.flatMap { id =>
-                      Stream.eval {
-                        for {
-                          _ <- as.increment
-                          _ <- q.enqueue1(id)
-                        } yield ()
-                      }
-                    }
-
-                    val enqueueElement
-                    : Pipe[Task, Element, Unit]
-                    = _.flatMap { element =>
-                      Stream.eval {
-                        for {
-                          _ <- elements.enqueue1(element)
-                          _ <- as.decrement
-                          n <- as.available
-                          _ <- finished.set(n == 0)
-                        } yield ()
-                      }
-                    }
-
-                    def extractElementsAndIDs
-                    (json: Json)
-                    : Stream[Task, Unit]
-                    = {
-                      val (inc, more) = json2elementMapDependencies(json)
-
-                      val elementsAdded
-                      : Stream[Task, Unit]
-                      = Stream.emits(inc) through enqueueElement
-
-                      val idsAdded
-                      : Stream[Task, Unit]
-                      = Stream.emits(more) through enqueueIDs
-
-                      val info
-                      : Stream[Task, Unit]
-                      = Stream.eval {
-                        for {
-                          n <- as.available
-                          s <- elements.size.get
-                          _ <- Task delay System.out.println(
-                            f"${Thread.currentThread.getName} (elements: $s%7d) => Remaining = ${if (n == 0) "Finished!" else n} with ${inc.size} elements and ${more.size} new IDs")
-                        } yield ()
-                      }
-
-                      elementsAdded.drain merge idsAdded.drain merge info.drain
-                    }
-
-                    val workers
-                    = for {
-                      i <- 1 to nbWorkers
-                      worker = Stream.repeatEval {
-                        for {
-                          ids <- q.dequeueBatch1(batchSize)
-                          json <- httpClient
-                            .expect[Json](
-                            Request(Method.POST,
-                              fetchIDBatchURI,
-                              headers = h,
-                              body =
-                                Stream.chunk(Chunk.bytes(ids.toList.mkString(",").getBytes(StandardCharsets.UTF_8)))))
-                          _ <- extractElementsAndIDs(json).run
-                        } yield ()
-                      }
-                    } yield worker
-
-                    val rootIDs
-                    : Stream[Task, Unit]
-                    = for {
-                      json <- Stream.eval(httpClient.expect[Json](Request(Method.GET, fetchRootIDsURI, headers = h)))
-                      ids = json2rootIDs(json)
-                      _ <- Stream.emits(ids) through enqueueIDs
-                    } yield ()
-
-                    (rootIDs.drain merge workers.reduce(_ merge _).drain).interruptWhen(finished)
-                }
-            }
+    def createWorkerPool
+    (es: async.mutable.Queue[Task, Element],
+     as: async.mutable.Semaphore[Task],
+     q: async.mutable.Queue[Task, ID],
+     finished: async.mutable.Signal[Task, Boolean])
+    : Stream[Task, Unit]
+    = {
+      val ws
+      = for {
+        i <- 1 to nbWorkers
+        worker = Stream.repeatEval {
+          for {
+            qs <- q.size.get
+            ids <- if (qs > 0) q.dequeueBatch1(batchSize).map(_.toVector) else Task.schedule(Seq.empty[ID], batchDelay)
+            _ <- fetchElements(es, as, q, finished, ids)
+          } yield ()
         }
+      } yield worker
 
-        fetchAll >> elements.dequeue
+      ws.reduce(_ merge _)
     }
 
-    Right(rq.runLog.unsafeRun())
+    val result
+    : Stream[Task, Element]
+    = Stream.eval(fechedElements).flatMap { es =>
+
+      val fetchAll
+      : Stream[Task, Unit]
+      = for {
+        q <- Stream.eval(idQueue)
+        as <- Stream.eval(remainingToReceive)
+        finished <- Stream.eval(allIDsFetched)
+        _ <- {
+          val workers: Stream[Task, Unit] = createWorkerPool(es, as, q, finished)
+          val roots: Stream[Task, Unit] = Stream.eval {
+            httpClient.expect[Json](Request(Method.GET, fetchRootIDsURI, headers = h)).flatMap { json =>
+              val ids = json2rootIDs(json)
+              for {
+                _ <- Stream.emits(ids).to(q.enqueue).drain.run
+                _ <- updateStats(es, as, q, finished, "Roots:  ", "")
+              } yield ()
+            }
+          }
+          (roots merge workers.drain).interruptWhen(finished)
+        }
+      } yield ()
+
+      fetchAll.drain >> es.dequeue
+    }
+
+    result.runLog
   }
 
 }
-
